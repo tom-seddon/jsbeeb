@@ -113,7 +113,6 @@ define(['utils', '6502.opcodes', 'via', 'acia', 'serial', 'fdc'],
                     var offset = this.memlook[this.vis20k][addr >> 8];
                     return this.ramRomOs[offset + addr];
                 }
-                //console.log("Peripheral read " + hexword(addr));
                 switch (addr & ~0x0003) {
                     case 0xfc20:
                     case 0xfc24:
@@ -210,6 +209,7 @@ define(['utils', '6502.opcodes', 'via', 'acia', 'serial', 'fdc'],
                 if (this.debugwrite) this.debugwrite(addr, b);
                 if (this.memstat[this.vis20k][addr >> 8] === 1) {
                     var offset = this.memlook[this.vis20k][addr >> 8];
+                    video.syncForMemWrite(addr);
                     this.ramRomOs[offset + addr] = b;
                     return;
                 }
