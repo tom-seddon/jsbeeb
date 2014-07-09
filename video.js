@@ -50,6 +50,9 @@ define(['teletext'], function (Teletext) {
             self.con = self.coff = self.cursoron = false; // on this line, off, on due to flash
             self.cdraw = 0;
             self.lastMinX = self.lastMaxX = self.lastMinY = self.lastMaxY = 0;
+            self.cursorPos = 0;
+            self.ilSyncAndVideo = false;
+            updateFbTable();
         };
 
         function paint() {
@@ -98,6 +101,22 @@ define(['teletext'], function (Teletext) {
             return t;
         }();
 
+        function fbTableOffset(byte) {
+            return ((byte | 0) * 16) | 0;
+        }
+
+        var fbTable = new Uint32Array(256 * 16);
+        var fbTableDirty = true;
+
+        function updateFbTable() {
+            var offset = table4bppOffset(self.ulamode, 0);
+            for (var i = 0; i < 256 * 16; ++i) {
+                fbTable[i] = self.ulapal[table4bpp[offset + i]];
+            }
+
+            fbTableDirty = false;
+        }
+
         self.reset(null);
 
         for (var y = 0; y < 768; ++y)
@@ -112,30 +131,45 @@ define(['teletext'], function (Teletext) {
                 }
                 self.charsleft--;
             } else if (self.scrx < 1280) {
-                var pixels = self.pixelsPerChar;
-                var blank = self.collook[0];
-                var offset = self.scry * 1280 + self.scrx;
-                var x;
-                for (x = 0; x < pixels; x += 8) {
-                    // As per below, the days of unrolling have returned.
-                    fb32[offset++] = blank;
-                    fb32[offset++] = blank;
-                    fb32[offset++] = blank;
-                    fb32[offset++] = blank;
-                    fb32[offset++] = blank;
-                    fb32[offset++] = blank;
-                    fb32[offset++] = blank;
-                    fb32[offset++] = blank;
-                }
+                clearFb(self.scry * 1280 + self.scrx, self.pixelsPerChar);
             }
             // TODO: cursor, if cdraw and scrx<1280..
+        }
+
+        function blitFb8(tblOff, destOffset) {
+            tblOff |= 0;
+            destOffset |= 0;
+            var fb32 = self.fb32;
+            fb32[destOffset] = fbTable[tblOff];
+            fb32[destOffset + 1] = fbTable[tblOff + 1];
+            fb32[destOffset + 2] = fbTable[tblOff + 2];
+            fb32[destOffset + 3] = fbTable[tblOff + 3];
+            fb32[destOffset + 4] = fbTable[tblOff + 4];
+            fb32[destOffset + 5] = fbTable[tblOff + 5];
+            fb32[destOffset + 6] = fbTable[tblOff + 6];
+            fb32[destOffset + 7] = fbTable[tblOff + 7];
+        }
+
+        function blitFb(dat, destOffset, numPixels) {
+            var tblOff = fbTableOffset(dat);
+            blitFb8(tblOff, destOffset);
+            if (numPixels === 16) {
+                blitFb8(tblOff + 8, destOffset + 8);
+            }
+        }
+
+        function clearFb(destOffset, numPixels) {
+            var black = self.collook[0];
+            var fb32 = self.fb32;
+            while (numPixels--) {
+                fb32[destOffset++] = black;
+            }
         }
 
         function renderchar() {
             var vidbank = 0; // TODO: vid bank support
 
-            var cursorPos = self.regs[15] | (self.regs[14] << 8);
-            if (!((self.ma ^ cursorPos) & 0x3fff) && self.con) {
+            if (!((self.ma ^ self.cursorPos) & 0x3fff) && self.con) {
                 self.cdraw = 3 - ((self.regs[8] >>> 6) & 3);
                 // TODO - hack to get mode7 cursor lined up - fix
                 if (self.crtcmode === 0) self.cdraw = 3;
@@ -145,8 +179,7 @@ define(['teletext'], function (Teletext) {
             if (self.ma & 0x2000) {
                 dat = self.cpu.readmem(0x7c00 | (self.ma & 0x3ff) | vidbank);
             } else {
-                var ilSyncAndVideo = (self.regs[8] & 3) === 3;
-                var addr = ilSyncAndVideo ? ((self.ma << 3) | ((self.sc & 3) << 1) | self.interlline)
+                var addr = self.ilSyncAndVideo ? ((self.ma << 3) | ((self.sc & 3) << 1) | self.interlline)
                     : ((self.ma << 3) | (self.sc & 7));
                 if (addr & 0x8000) addr -= screenlen[self.sysvia.getScrSize()];
                 dat = self.cpu.readmem((addr & 0x7fff) | vidbank) | 0;
@@ -156,56 +189,25 @@ define(['teletext'], function (Teletext) {
                 var pixels = self.pixelsPerChar;
                 var fb32 = self.fb32;
                 var fbOffset = offset;
-                var i;
                 if ((self.regs[8] & 0x30) === 0x30 || ((self.sc & 8) && !(self.ulactrl & 2))) {
-                    var black = self.collook[0];
-                    for (i = 0; i < pixels; i += 8) {
-                        // As per below, this is faster.
-                        fb32[fbOffset++] = black;
-                        fb32[fbOffset++] = black;
-                        fb32[fbOffset++] = black;
-                        fb32[fbOffset++] = black;
-                        fb32[fbOffset++] = black;
-                        fb32[fbOffset++] = black;
-                        fb32[fbOffset++] = black;
-                        fb32[fbOffset++] = black;
-                    }
+                    clearFb(fbOffset, pixels);
                 } else {
-                    var lastx;
                     if (self.crtcmode === 0) {
-                        self.teletext.render(self.fb32, offset, self.sc, dat & 0x7f);
-                        var firstx = self.scrx + 16;
-                        if (firstx < self.minx) self.minx = firstx;
-                        lastx = self.scrx + 32;
-                        if (lastx > self.maxx) self.maxx = lastx;
+                        self.teletext.render(fb32, offset, self.sc, dat & 0x7f);
+                        self.minx = Math.min(self.minx, self.scrx + 16) | 0;
+                        self.maxx = Math.max(self.maxx, self.scrx + 32) | 0;
                     } else {
-                        var tblOff = table4bppOffset(self.ulamode, dat);
-                        var ulapal = self.ulapal;
-                        for (i = 0; i < pixels; i += 8) {
-                            // This really does make a difference, at least in Chrome.
-                            // Unrolling is a big win, and don't be tempted to update the
-                            // two offsets in separate statements - that seems to slow things down
-                            // again.
-                            fb32[fbOffset++] = ulapal[table4bpp[tblOff++]];
-                            fb32[fbOffset++] = ulapal[table4bpp[tblOff++]];
-                            fb32[fbOffset++] = ulapal[table4bpp[tblOff++]];
-                            fb32[fbOffset++] = ulapal[table4bpp[tblOff++]];
-                            fb32[fbOffset++] = ulapal[table4bpp[tblOff++]];
-                            fb32[fbOffset++] = ulapal[table4bpp[tblOff++]];
-                            fb32[fbOffset++] = ulapal[table4bpp[tblOff++]];
-                            fb32[fbOffset++] = ulapal[table4bpp[tblOff++]];
-                        }
-                        if (self.scrx < self.minx) self.minx = self.scrx;
-                        lastx = self.scrx + pixels;
-                        if (lastx > self.maxx) self.maxx = lastx;
+                        blitFb(dat, fbOffset, pixels);
+                        self.minx = Math.min(self.minx, self.scrx) | 0;
+                        self.maxx = Math.max(self.maxx, self.scrx + pixels) | 0;
                     }
                 }
 
                 // TODO: move to common rendering code so handles case of being blank
                 if (self.cdraw) {
                     if (self.cursoron && (self.ulactrl & cursorTable[self.cdraw])) {
-                        for (i = 0; i < pixels; ++i) {
-                            self.fb32[offset + i] = self.fb32[offset + i] ^ 0x00ffffff;
+                        for (var i = 0; i < pixels; ++i) {
+                            fb32[offset + i] = self.fb32[offset + i] ^ 0x00ffffff;
                         }
                     }
                     if (++self.cdraw === 7) self.cdraw = 0;
@@ -216,11 +218,10 @@ define(['teletext'], function (Teletext) {
         }
 
         self.endofline = function () {
-            var interlaced = (self.regs[8] & 3) === 3; // todo rename ilSyncAndVideo as above?
             self.hc = 0;
 
             var cursorEnd = self.regs[11] & 31;
-            if (self.sc === cursorEnd || (interlaced && self.sc === (cursorEnd >>> 1))) {
+            if (self.sc === cursorEnd || (self.ilSyncAndVideo && self.sc === (cursorEnd >>> 1))) {
                 self.con = false;
                 self.coff = true;
             }
@@ -234,7 +235,7 @@ define(['teletext'], function (Teletext) {
                     self.ma = self.maback = (self.regs[13] | (self.regs[12] << 8)) & 0x3fff;
                     self.sc = 0;
                 }
-            } else if (self.sc === self.regs[9] || (interlaced && self.sc === (self.regs[9] >>> 1))) {
+            } else if (self.sc === self.regs[9] || (self.ilSyncAndVideo && self.sc === (self.regs[9] >>> 1))) {
                 // end of a vertical character
                 self.maback = self.ma;
                 self.sc = 0;
@@ -265,14 +266,12 @@ define(['teletext'], function (Teletext) {
                     if (self.frameodd) self.interline = !!(self.regs[8] & 1);
                     self.interlline = self.frameodd && (self.regs[8] & 1);
                     self.oldr8 = self.regs[8] & 1;
-                    // TODO: fathom out ccount here, seems to be a "don't update very often
-                    // while motor is on or page up pressed" in b-em
-                    if (self.vidclocks > 2 /*&& !ccount*/) {
+                    if (self.vidclocks > 2) {
                         paint();
                     }
                     self.scry = 0;
                     self.sysvia.vblankint();
-                    if (ctt < 0) console.log(ctt);
+//                    if (ctt < 0) console.log(ctt);
                     self.vsynctime = (self.regs[3] >> 4) + 1;
                     if (!(self.regs[3] >> 4)) self.vsynctime = 17;
                     self.teletext.vsync();
@@ -286,7 +285,7 @@ define(['teletext'], function (Teletext) {
             self.teletext.endline();
 
             var cursorStartLine = self.regs[10] & 31;
-            if (!self.coff && (self.sc === cursorStartLine || (interlaced && self.sc === (cursorStartLine >>> 1)))) {
+            if (!self.coff && (self.sc === cursorStartLine || (self.ilSyncAndVideo && self.sc === (cursorStartLine >>> 1)))) {
                 self.con = true;
             }
 
@@ -323,7 +322,7 @@ define(['teletext'], function (Teletext) {
                 if (self.cpu.interrupt === 0) {
                     missed += cycles;
                 } else if (missed) {
-                    console.log(missed);
+//                    console.log(missed);
                     missed = 0;
                 }
                 ctt = 0;
@@ -351,7 +350,7 @@ define(['teletext'], function (Teletext) {
         }
 
         this.syncForMemWrite = function (addr) {
-//            if (addr >= self.memLowWater) sync();
+            if (addr >= self.memLowWater) sync();
         }
 
         this.sync = sync;
@@ -359,6 +358,7 @@ define(['teletext'], function (Teletext) {
         ////////////////////
         // Main drawing routine
         function drawFor(clocks) {
+            if (fbTableDirty) updateFbTable();
             while (clocks--) {
                 ctt--; // TODO
                 self.scrx += 8;
@@ -429,20 +429,30 @@ define(['teletext'], function (Teletext) {
                 if (addr & 1) {
                     sync();
                     video.regs[curReg] = val & crtcmask[curReg];
-                    if (curReg === 12 || curReg === 13) {
-                        var screenAddr = (self.regs[13] | (self.regs[12] << 8)) & 0x3fff;
-                        if (screenAddr & 0x2000) {
-                            self.memLowWater = 0x7c00;
-                        } else {
-                            self.memLowWater = screenAddr * 8;
-                        }
+                    switch (curReg) {
+                        case 8:
+                            self.ilSyncAndVideo = (self.regs[8] & 3) === 3;
+                            break;
+                        case 12:
+                        case 13:
+                            var screenAddr = (self.regs[13] | (self.regs[12] << 8)) & 0x3fff;
+                            if (screenAddr & 0x2000) {
+                                self.memLowWater = 0x7c00;
+                            } else {
+                                self.memLowWater = screenAddr * 8;
+                            }
+                            break;
+                        case 14:
+                        case 15:
+                            self.cursorPos = self.regs[15] | (self.regs[14] << 8);
+                            break;
                     }
-                    updateCyclesUntilNextIrq();
-                } else
+                }
+                else
                     curReg = val & 31;
+                updateCyclesUntilNextIrq();
             };
         })(self);
-
 
         ////////////////////
         // ULA interface
@@ -459,24 +469,33 @@ define(['teletext'], function (Teletext) {
                     index = (val >>> 4) & 0xf;
                     self.bakpal[index] = val & 0xf;
                     var ulaCol = val & 7;
-                    if ((val & 8) && (self.ulactrl & 1))
+                    if (!((val & 8) && (self.ulactrl & 1)))
+                        ulaCol ^= 7;
+                    if (self.ulapal[index] !== self.collook[ulaCol]) {
                         self.ulapal[index] = self.collook[ulaCol];
-                    else
-                        self.ulapal[index] = self.collook[ulaCol ^ 7];
+                        fbTableDirty = true;
+                    }
                 } else {
                     if ((self.ulactrl ^ val) & 1) {
-                        // Flash colour has changed
+                        // Flash colour has changed.
                         var flashEnabled = !!(val & 1);
                         for (var i = 0; i < 16; ++i) {
                             index = self.bakpal[i] & 7;
                             if (!(flashEnabled && (self.bakpal[i] & 8))) index ^= 7;
-                            self.ulapal[i] = self.collook[index];
+                            if (self.ulapal[i] !== self.collook[index]) {
+                                self.ulapal[i] = self.collook[index];
+                                fbTableDirty = true;
+                            }
                         }
                     }
                     self.ulactrl = val;
                     self.pixelsPerChar = (val & 0x10) ? 8 : 16;
                     self.halfClock = !(val & 0x10);
-                    self.ulamode = (val >>> 2) & 3;
+                    var newMode = (val >>> 2) & 3;
+                    if (newMode !== self.ulamode) {
+                        self.ulamode = newMode;
+                        fbTableDirty = true;
+                    }
                     if (val & 2) self.crtcmode = 0;
                     else if (val & 0x10) self.crtcmode = 1;
                     else self.crtcmode = 2;
