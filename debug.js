@@ -312,9 +312,37 @@ define(['jquery', 'underscore', 'utils'], function ($, _, utils) {
 
         disass.find('.bp_gutter').click(bpClick);
 
+        function findRuns() {
+            var runs = [];
+            var startPc = -1;
+            var nextExpected = -1;
+            cpu.dumpTime(0, function (address) {
+                var result = disassemble(address);
+                if (startPc === -1) {
+                    startPc = address;
+                } else {
+                    if (address !== nextExpected) {
+                        runs.push([startPc, nextExpected - 1, '→']);
+                        if (address < nextExpected) {
+                            runs.push([address, nextExpected, '↑']);
+                        } else {
+                            runs.push([nextExpected, address, '↓']);
+                        }
+                        startPc = address;
+                    }
+                }
+                nextExpected = result[1];
+            });
+            runs.push([startPc, nextExpected - 1, '→']);
+            return runs;
+        }
+
         function updateDisassembly(address) {
             disassPc = address;
             var elems = disass.children().filter(":visible");
+
+            var runs = findRuns();
+            runs = runs.slice(runs.length - 6);
 
             function updateDisElem(elem, address) {
                 var result = disassemble(address);
@@ -329,6 +357,19 @@ define(['jquery', 'underscore', 'utils'], function ($, _, utils) {
                 disNode.find('.instr_instr_ref').click(instrClick);
                 elem.find('.bp_gutter').toggleClass('active', !!breakpoints[address]);
                 elem.data({addr: address, ref: result[2]});
+                var str = "";
+                runs.forEach(function (run) {
+                    if (address >= run[0] && address <= run[1]) {
+                        if (str.length && address === run[0] && run[2] === '→') {
+                            str = str.substr(0, str.length - 1) + '↱→';
+                        } else {
+                            str += run[2];
+                        }
+                    } else {
+                        str += "&nbsp;";
+                    }
+                });
+                elem.find(".from").html(str);
                 return result[1];
             }
 
