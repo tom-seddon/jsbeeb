@@ -87,7 +87,7 @@ define(['./teletext', './utils'], function (Teletext, utils) {
             );
         };
 
-        this.clearPaintBuffer = function() {
+        this.clearPaintBuffer = function () {
             var fb32 = this.fb32;
             if (this.interlacedSyncAndVideo || !this.doubledScanlines) {
                 var line = (this.frameCount & 1);
@@ -101,7 +101,7 @@ define(['./teletext', './utils'], function (Teletext, utils) {
             }
         };
 
-        this.paintAndClear = function() {
+        this.paintAndClear = function () {
             if (this.dispEnabled & FRAMESKIPENABLE) {
                 this.paint();
                 this.clearPaintBuffer();
@@ -425,9 +425,9 @@ define(['./teletext', './utils'], function (Teletext, utils) {
             }
         };
 
-        this.dispEnableChanged = function() {
+        this.dispEnableChanged = function () {
             // The DISPTMG output pin is wired to the SAA5050 teletext chip,
-	    // for scanline tracking, so keep it apprised.
+            // for scanline tracking, so keep it apprised.
             var mask = (HDISPENABLE | VDISPENABLE | USERDISPENABLE);
             var disptmg = ((this.dispEnabled & mask) === mask);
             this.teletext.setDISPTMG(disptmg);
@@ -498,8 +498,8 @@ define(['./teletext', './utils'], function (Teletext, utils) {
                 // half-scanline counter that starts when an R7 hit is noticed?
                 var halfR0Hit = (this.horizCounter === (this.regs[0] >>> 1));
                 var isVsyncPoint = (!isInterlace ||
-                                    !this.doEvenFrameLogic ||
-                                    halfR0Hit);
+                    !this.doEvenFrameLogic ||
+                    halfR0Hit);
                 var vSyncEnding = false;
                 var vSyncStarting = false;
                 if (this.inVSync &&
@@ -580,7 +580,7 @@ define(['./teletext', './utils'], function (Teletext, utils) {
                                 this.teletext.render(this.fb32, offset);
                                 if (doubledLines) {
                                     this.teletext.render(this.fb32,
-                                                         (offset + 1024));
+                                        (offset + 1024));
                                 }
                             } else {
                                 this.blitFb(dat, offset, this.pixelsPerChar, doubledLines);
