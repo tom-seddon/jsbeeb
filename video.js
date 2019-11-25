@@ -726,39 +726,51 @@ define(['./teletext', './utils'], function (Teletext, utils) {
             this.video = video;
         }
 
+        Ula.prototype.writePalette = function (val) {
+            val |= 0;
+
+            var index = (val >>> 4) & 0xf;
+            this.video.actualPal[index] = val & 0xf;
+            var ulaCol = val & 7;
+            if (!((val & 8) && (this.video.ulactrl & 1)))
+                ulaCol ^= 7;
+            if (this.video.ulaPal[index] !== this.video.collook[ulaCol]) {
+                this.video.ulaPal[index] = this.video.collook[ulaCol];
+            }
+        };
+
+        Ula.prototype.writeControl = function (val) {
+            val |= 0;
+
+            if ((this.video.ulactrl ^ val) & 1) {
+                // Flash colour has changed.
+                var flashEnabled = !!(val & 1);
+                for (var i = 0; i < 16; ++i) {
+                    var index = this.video.actualPal[i] & 7;
+                    if (!(flashEnabled && (this.video.actualPal[i] & 8))) index ^= 7;
+                    if (this.video.ulaPal[i] !== this.video.collook[index]) {
+                        this.video.ulaPal[i] = this.video.collook[index];
+                    }
+                }
+            }
+            this.video.ulactrl = val;
+            this.video.pixelsPerChar = (val & 0x10) ? 8 : 16;
+            this.video.halfClock = !(val & 0x10);
+            var newMode = (val >>> 2) & 3;
+            if (newMode !== this.video.ulaMode) {
+                this.video.ulaMode = newMode;
+            }
+            this.video.teletextMode = !!(val & 2);
+        }
+
         Ula.prototype.write = function (addr, val) {
             addr |= 0;
             val |= 0;
-            var index;
+
             if (addr & 1) {
-                index = (val >>> 4) & 0xf;
-                this.video.actualPal[index] = val & 0xf;
-                var ulaCol = val & 7;
-                if (!((val & 8) && (this.video.ulactrl & 1)))
-                    ulaCol ^= 7;
-                if (this.video.ulaPal[index] !== this.video.collook[ulaCol]) {
-                    this.video.ulaPal[index] = this.video.collook[ulaCol];
-                }
+                this.writePalette(val);
             } else {
-                if ((this.video.ulactrl ^ val) & 1) {
-                    // Flash colour has changed.
-                    var flashEnabled = !!(val & 1);
-                    for (var i = 0; i < 16; ++i) {
-                        index = this.video.actualPal[i] & 7;
-                        if (!(flashEnabled && (this.video.actualPal[i] & 8))) index ^= 7;
-                        if (this.video.ulaPal[i] !== this.video.collook[index]) {
-                            this.video.ulaPal[i] = this.video.collook[index];
-                        }
-                    }
-                }
-                this.video.ulactrl = val;
-                this.video.pixelsPerChar = (val & 0x10) ? 8 : 16;
-                this.video.halfClock = !(val & 0x10);
-                var newMode = (val >>> 2) & 3;
-                if (newMode !== this.video.ulaMode) {
-                    this.video.ulaMode = newMode;
-                }
-                this.video.teletextMode = !!(val & 2);
+                this.writeControl(val);
             }
         };
 
