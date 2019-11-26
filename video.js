@@ -895,6 +895,7 @@ define(['./teletext', './utils'], function (Teletext, utils) {
                 case 1:
                     // Set palette mode
                     this.video.nulaPaletteDirect = (param & 1) !== 0;
+                    this.updateNulaPalette();
                     break;
 
                 case 2:
