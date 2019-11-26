@@ -775,7 +775,7 @@ define(['./teletext', './utils'], function (Teletext, utils) {
 
             if (!this.video.nulaPaletteDirect) {
                 var ulaCol = this.video.actualPal[index];
-                if ((this.video.ulactrl & 1) && this.isFlashingColour[ulaCol]) {
+                if ((this.video.ulactrl & 1) && this.video.isFlashingColour[ulaCol]) {
                     ulaCol ^= 7;
                 }
 
