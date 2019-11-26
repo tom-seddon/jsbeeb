@@ -8,12 +8,27 @@ define(['./teletext', './utils'], function (Teletext, utils) {
         FRAMESKIPENABLE = 1 << 5,
         EVERYTHINGENABLED = VDISPENABLE | HDISPENABLE | SKEWDISPENABLE | SCANLINEDISPENABLE | USERDISPENABLE | FRAMESKIPENABLE;
 
+    function getDefaultPalette() {
+        return utils.makeFast32(new Uint32Array([
+            0xff000000, 0xff0000ff, 0xff00ff00, 0xff00ffff, 0xffff0000, 0xffff00ff, 0xffffff00, 0xffffffff,
+            0xff000000, 0xff0000ff, 0xff00ff00, 0xff00ffff, 0xffff0000, 0xffff00ff, 0xffffff00, 0xffffffff,
+        ]));
+    }
+
+    // x.toString(16) is just not useful.
+    //
+    // (This just strips the alpha out. It's always 255 here.)
+    function getRGBAString(x) {
+        return `#${(x & 0x00ffffff).toString(16).padStart(6, '0')}`;
+    }
+
     function Video(isMaster, fb32_param, paint_ext_param) {
         this.isMaster = isMaster;
         this.fb32 = utils.makeFast32(fb32_param);
-        this.collook = utils.makeFast32(new Uint32Array([
-            0xff000000, 0xff0000ff, 0xff00ff00, 0xff00ffff,
-            0xffff0000, 0xffff00ff, 0xffffff00, 0xffffffff]));
+        this.collook = getDefaultPalette();
+        for (var i = 0; i < 16; ++i) {
+            console.log(`collook[${i}]=${getRGBAString(this.collook[i])}`);
+        }
         this.screenAddrAdd = new Uint16Array([0x4000, 0x3000, 0x6000, 0x5800]);
         this.cursorTable = new Uint8Array([0x00, 0x00, 0x00, 0x80, 0x40, 0x20, 0x20]);
         this.cursorFlashMask = new Uint8Array([0x00, 0x00, 0x08, 0x10]);
@@ -55,6 +70,15 @@ define(['./teletext', './utils'], function (Teletext, utils) {
         this.displayEnableSkew = 0;
         this.ulaPal = utils.makeFast32(new Uint32Array(16));
         this.actualPal = new Uint8Array(16);
+        this.identityPal = new Uint8Array(16);
+        for (var i = 0; i < 16; ++i) {
+            this.identityPal[i] = i;
+        }
+        this.isFlashingColour = new Uint8Array([
+            false, false, false, false, false, false, false, false,// 0-7 = no flash
+            true, true, true, true, true, true, true, true,// 8-15 = flash
+        ]);
+        console.log(this.isFlashingColour);
         this.teletext = new Teletext();
         this.cursorOn = false;
         this.cursorOff = false;
@@ -71,6 +95,19 @@ define(['./teletext', './utils'], function (Teletext, utils) {
         this.rightBorder = 3 * 16;
 
         this.paint_ext = paint_ext_param;
+
+        // 1 = ordinary video ULA; 3 = Video NuLA
+        this.ulaAddressMask = 3;
+
+        // undefined = waiting for first write; otherwise, waiting for second
+        // write.
+        this.nulaPaletteFirstByte = undefined;
+
+        // false = logical colour index looks up into ULA palette; physical
+        // colour index looks up into NuLA palette
+        //
+        // true = logical colour index looks up into NuLA palette
+        this.nulaPaletteDirect = false;
 
         this.reset = function (cpu, via, hard) {
             this.cpu = cpu;
@@ -724,19 +761,30 @@ define(['./teletext', './utils'], function (Teletext, utils) {
         // ULA interface
         function Ula(video) {
             this.video = video;
+            this.logState();
         }
 
         Ula.prototype.writePalette = function (val) {
             val |= 0;
 
             var index = (val >>> 4) & 0xf;
-            this.video.actualPal[index] = val & 0xf;
-            var ulaCol = val & 7;
-            if (!((val & 8) && (this.video.ulactrl & 1)))
-                ulaCol ^= 7;
-            if (this.video.ulaPal[index] !== this.video.collook[ulaCol]) {
+            this.video.actualPal[index] = (val & 0xf) ^ 7;
+
+            console.log(`Write palette: ${index} ${this.video.actualPal[index].toString(16)}`);
+            //console.log(this.video.collook);
+
+            if (!this.video.nulaPaletteDirect) {
+                var ulaCol = this.video.actualPal[index];
+                if ((this.video.ulactrl & 1) && this.isFlashingColour[ulaCol]) {
+                    ulaCol ^= 7;
+                }
+
                 this.video.ulaPal[index] = this.video.collook[ulaCol];
+
+                console.log(`this.video.ulaPal[${index}]=${getRGBAString(this.video.ulaPal[index])}`);
             }
+
+            this.logState();
         };
 
         Ula.prototype.writeControl = function (val) {
@@ -744,14 +792,7 @@ define(['./teletext', './utils'], function (Teletext, utils) {
 
             if ((this.video.ulactrl ^ val) & 1) {
                 // Flash colour has changed.
-                var flashEnabled = !!(val & 1);
-                for (var i = 0; i < 16; ++i) {
-                    var index = this.video.actualPal[i] & 7;
-                    if (!(flashEnabled && (this.video.actualPal[i] & 8))) index ^= 7;
-                    if (this.video.ulaPal[i] !== this.video.collook[index]) {
-                        this.video.ulaPal[i] = this.video.collook[index];
-                    }
-                }
+                this.updateNulaPalette();
             }
             this.video.ulactrl = val;
             this.video.pixelsPerChar = (val & 0x10) ? 8 : 16;
@@ -763,14 +804,160 @@ define(['./teletext', './utils'], function (Teletext, utils) {
             this.video.teletextMode = !!(val & 2);
         }
 
+        Ula.prototype.writeNulaPalette = function (val) {
+            val |= 0;
+
+            if (this.video.nulaPaletteFirstByte === undefined) {
+                this.video.nulaPaletteFirstByte = val;
+            } else {
+                var index = this.video.nulaPaletteFirstByte >>> 4;
+                var r = this.video.nulaPaletteFirstByte & 0xf;
+                var g = val >>> 4;
+                var b = val & 0xf;
+
+                this.video.collook[index] = 0xff000000 + (b << 20 | b << 16 | g << 12 | g << 8 | r << 4 | r);
+                this.video.isFlashingColour[index] = false;
+
+                console.log(`NuLA palette: ${index}= ${getRGBAString(this.video.collook[index])}`);
+                this.logState();
+
+                // TODO - is there any point trying not to update the entire
+                // palette?
+                this.updateNulaPalette();
+
+                this.video.nulaPaletteFirstByte = undefined;
+            }
+        };
+
+        Ula.prototype.updateNulaPalette = function () {
+            var pal;
+            if (this.video.nulaPaletteDirect) {
+                pal = this.video.identityPal;
+            } else {
+                pal = this.video.actualPal;
+            }
+
+            var flashEnabled = !!(this.video.ulactrl & 1);
+
+            for (var i = 0; i < 16; ++i) {
+                let index = pal[i];
+
+                if (flashEnabled && this.video.isFlashingColour[index]) {
+                    index ^= 7;
+                }
+
+                this.video.ulaPal[i] = this.video.collook[index];
+            }
+        };
+
+        Ula.prototype.logState = function () {
+            let flashingColours = ``;
+            for (var i = 0; i < 16; ++i) {
+                if (this.video.isFlashingColour[i]) {
+                    if (flashingColours.length > 0) {
+                        flashingColours += ` `;
+                    }
+
+                    flashingColours += `${i}`;
+                }
+            }
+            console.log(`Flashing colours: ${flashingColours}`);
+
+            for (var i = 0; i < 16; ++i) {
+                console.log(`NuLA palette: ${i}=${getRGBAString(this.video.collook[i])}`);
+            }
+
+            for (var i = 0; i < 16; ++i) {
+                console.log(`ULA palette: ${i}=0x${this.video.actualPal[i].toString(16)}`);
+            }
+        };
+
+        Ula.prototype.setFlashFlags = function (index, flags) {
+            this.video.isFlashingColour[index + 0] = !!(flags & 1);
+            this.video.isFlashingColour[index + 1] = !!(flags & 2);
+            this.video.isFlashingColour[index + 2] = !!(flags & 4);
+            this.video.isFlashingColour[index + 3] = !!(flags & 8);
+
+            this.logState();
+        };
+
+        Ula.prototype.writeNulaControl = function (val) {
+            val |= 0;
+
+            var code = val >>> 4;
+            var param = val & 0x0f;
+
+            switch (code) {
+                default:
+                    // Control codes 0 and 10-15 are reserved for future use.
+                    break;
+
+                case 1:
+                    // Set palette mode
+                    this.video.nulaPaletteDirect = (param & 1) !== 0;
+                    break;
+
+                case 2:
+                    // Set horizontal scroll offset
+                    break;
+
+                case 3:
+                    // Set left blanking size
+                    break;
+
+                case 4:
+                    // Reset extended features to defaults
+                    this.video.collook = getDefaultPalette();
+                    this.setFlashFlags(8, 0xf);
+                    this.setFlashFlags(12, 0xf);
+                    this.updateNulaPalette();
+                    break;
+
+                case 5:
+                    // Disable extended features
+                    this.video.ulaAddressMask = 1;
+                    break;
+
+                case 6:
+                    // Enable/disable attribute modes
+                    break;
+
+                case 7:
+                    // Enable/disable extended attribute modes
+                    break;
+
+                case 8:
+                    // Set flashing flags for logical colours 8-11
+                    this.setFlashFlags(8, param);
+                    break;
+
+                case 9:
+                    this.setFlashFlags(12, param);
+                    // Set flashing flags for logical colours 12-15
+                    break;
+            }
+        };
+
         Ula.prototype.write = function (addr, val) {
             addr |= 0;
             val |= 0;
 
-            if (addr & 1) {
-                this.writePalette(val);
-            } else {
-                this.writeControl(val);
+            switch (addr & this.video.ulaAddressMask) {
+                case 0:
+                    this.writeControl(val);
+                    break;
+
+                case 1:
+                    this.writePalette(val);
+                    break;
+
+                case 2:
+                    this.writeNulaControl(val);
+                    break;
+
+                case 3:
+                    this.writeNulaPalette(val);
+                    break;
             }
         };
 
