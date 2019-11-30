@@ -109,6 +109,8 @@ define(['./teletext', './utils'], function (Teletext, utils) {
         // true = logical colour index looks up into NuLA palette
         this.nulaPaletteDirect = false;
 
+        this.nulaBlankingSize = 0;
+
         this.reset = function (cpu, via, hard) {
             this.cpu = cpu;
             this.sysvia = via;
@@ -500,7 +502,7 @@ define(['./teletext', './utils'], function (Teletext, utils) {
 
                 // Handle delayed display enable due to skew
                 var displayEnablePos = this.displayEnableSkew + (this.teletextMode ? 2 : 0);
-                if (this.horizCounter === displayEnablePos) {
+                if (this.horizCounter === displayEnablePos + (this.teletextMode ? 0 : this.nulaBlankingSize)) {
                     this.dispEnableSet(SKEWDISPENABLE);
                 }
 
@@ -904,10 +906,12 @@ define(['./teletext', './utils'], function (Teletext, utils) {
 
                 case 3:
                     // Set left blanking size
+                    this.video.nulaBlankingSize = param;
                     break;
 
                 case 4:
                     // Reset extended features to defaults
+                    this.video.nulaBlankingSize = 0;
                     this.video.collook = getDefaultPalette();
                     this.setFlashFlags(8, 0xf);
                     this.setFlashFlags(12, 0xf);
